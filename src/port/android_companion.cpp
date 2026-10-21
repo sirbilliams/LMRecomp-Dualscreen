@@ -5,8 +5,10 @@
 // would: aligned 8/16/32-bit loads, at worst one frame stale.
 #ifdef __ANDROID__
 #include "port/install.h"
+#include "recomp/controls.h"
 #include "recomp/ctx.h"
 
+#include <SDL3/SDL_events.h>
 #include <jni.h>
 
 #include <mutex>
@@ -18,10 +20,10 @@ u32 copyDispCount();  // hle_gx.cpp: guest frame number
 
 namespace {
 
-using recomp::u32;
+using GuestU32 = recomp::u32;
 
 struct Watch {
-    u32 address;
+    GuestU32 address;
     int offset, size;
     bool deref;
 };
@@ -29,24 +31,24 @@ struct Watch {
 std::mutex sM;
 std::vector<Watch> sWatches;
 
-bool validGuest(u32 a, int size) {
+bool validGuest(GuestU32 a, int size) {
     // Cached or uncached main RAM inside the host window.
-    const u32 seg = a >> 28;
+    const GuestU32 seg = a >> 28;
     if (seg != 0x8 && seg != 0xC) return false;
-    const u32 off = a & 0x0FFFFFFF;
-    return off + u32(size) <= recomp::kHostMemSize;
+    const GuestU32 off = a & 0x0FFFFFFF;
+    return off + GuestU32(size) <= recomp::kHostMemSize;
 }
 
-bool readValue(const Watch& w, u32& out) {
+bool readValue(const Watch& w, GuestU32& out) {
     if (!recomp::g_mem) return false;
-    u32 a = w.address;
+    GuestU32 a = w.address;
     if (w.deref) {
         if (!validGuest(a, 4)) return false;
-        const u32 p = recomp::rd32(a);
+        const GuestU32 p = recomp::rd32(a);
         if (p == 0) return false;
-        a = p + u32(w.offset);
+        a = p + GuestU32(w.offset);
     } else {
-        a += u32(w.offset);
+        a += GuestU32(w.offset);
     }
     if (!validGuest(a, w.size)) return false;
     switch (w.size) {
@@ -76,7 +78,7 @@ JNIEXPORT void JNICALL Java_io_github_sirbilliams_lmrecompiled_companion_Compani
         std::vector<jint> v(static_cast<size_t>(n));
         env->GetIntArrayRegion(spec, 0, n, v.data());
         for (jsize i = 0; i + 3 < n; i += 4)
-            watches.push_back({u32(v[size_t(i)]), int(v[size_t(i + 1)]), int(v[size_t(i + 2)]), v[size_t(i + 3)] != 0});
+            watches.push_back({GuestU32(v[size_t(i)]), int(v[size_t(i + 1)]), int(v[size_t(i + 2)]), v[size_t(i + 3)] != 0});
     }
     std::lock_guard lk(sM);
     sWatches = std::move(watches);
@@ -91,7 +93,7 @@ JNIEXPORT jintArray JNICALL Java_io_github_sirbilliams_lmrecompiled_companion_Co
         out.reserve(1 + sWatches.size() * 2);
         out.push_back(recomp::g_mem ? jint(recomp::copyDispCount() + 1) : 0);
         for (const auto& w : sWatches) {
-            u32 v = 0;
+            GuestU32 v = 0;
             const bool ok = readValue(w, v);
             out.push_back(jint(v));
             out.push_back(ok ? 1 : 0);
@@ -100,6 +102,23 @@ JNIEXPORT jintArray JNICALL Java_io_github_sirbilliams_lmrecompiled_companion_Co
     jintArray arr = env->NewIntArray(jsize(out.size()));
     env->SetIntArrayRegion(arr, 0, jsize(out.size()), out.data());
     return arr;
+}
+
+// Touch buttons: GameCube buttons (PAD_BUTTON_* mask) held for `frames` controller reads.
+JNIEXPORT void JNICALL Java_io_github_sirbilliams_lmrecompiled_companion_CompanionNative_pressButtons(JNIEnv*, jclass,
+                                                                                                      jint mask,
+                                                                                                      jint frames) {
+    recomp::controls::pressButtons(static_cast<unsigned short>(mask), frames);
+}
+
+// Opens or closes the F1 options menu on the main screen (the same F1 key event the menu handles).
+JNIEXPORT void JNICALL Java_io_github_sirbilliams_lmrecompiled_companion_CompanionNative_toggleMenu(JNIEnv*, jclass) {
+    SDL_Event ev{};
+    ev.type = SDL_EVENT_KEY_DOWN;
+    ev.key.key = SDLK_F1;
+    ev.key.scancode = SDL_SCANCODE_F1;
+    ev.key.down = true;
+    SDL_PushEvent(&ev);
 }
 
 }  // extern "C"

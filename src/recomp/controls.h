@@ -24,4 +24,8 @@ void afterRead(PADStatus* status);
 // PADControlMotor with the port's rumble setting applied.
 void controlMotor(u32 chan, u32 cmd);
 
+// Buttons pressed from outside the controller (the AYN Thor companion screen's touch buttons,
+// docs/ANDROID.md): OR'd into port 1's buttons for the next `reads` PAD reads. Any thread.
+void pressButtons(u16 mask, int reads);
+
 }  // namespace recomp::controls

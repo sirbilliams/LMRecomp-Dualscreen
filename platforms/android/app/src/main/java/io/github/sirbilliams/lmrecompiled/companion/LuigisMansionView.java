@@ -32,7 +32,8 @@ import java.util.Locale;
  * f3.png, b1.png, roof.png, lab.png; visible in the Files app under "LM Recompiled Data"). Without
  * them the map is drawn as room names at their positions.
  *
- * Tap the map to look at another floor; tap the top bar (or wait) to follow Luigi again.
+ * Tap the map to look at another floor; tap the top bar (or wait) to follow Luigi again. The
+ * buttons along the bottom open the F1 options menu on the main screen and pause (Start).
  */
 final class LuigisMansionView extends CompanionView {
     private static final long FRAME_MS = 33;
@@ -58,6 +59,10 @@ final class LuigisMansionView extends CompanionView {
     // Hit areas, updated in onDraw.
     private final RectF headerRect = new RectF();
     private final RectF mapRect = new RectF();
+    private final RectF menuButton = new RectF();
+    private final RectF pauseButton = new RectF();
+    private RectF pressed;
+    private long pressedUntil;
 
     private final int bg = Color.rgb(11, 14, 20);
     private final int panel = Color.rgb(22, 27, 36);
@@ -120,7 +125,13 @@ final class LuigisMansionView extends CompanionView {
     @Override
     public boolean onTouchEvent(MotionEvent event) {
         if (event.getActionMasked() != MotionEvent.ACTION_UP) return true;
-        if (headerRect.contains(event.getX(), event.getY())) {
+        if (menuButton.contains(event.getX(), event.getY())) {
+            CompanionNative.toggleMenu();
+            flash(menuButton);
+        } else if (pauseButton.contains(event.getX(), event.getY())) {
+            CompanionNative.pressButtons(CompanionNative.PAD_BUTTON_START, 4);
+            flash(pauseButton);
+        } else if (headerRect.contains(event.getX(), event.getY())) {
             manualFloor = null;
         } else if (mapRect.contains(event.getX(), event.getY()) && !table.maps.isEmpty()) {
             List<String> keys = new ArrayList<>(table.maps.keySet());
@@ -131,6 +142,11 @@ final class LuigisMansionView extends CompanionView {
         }
         invalidate();
         return true;
+    }
+
+    private void flash(RectF button) {
+        pressed = button;
+        pressedUntil = SystemClock.uptimeMillis() + 150;
     }
 
     private String shownFloorKey() {
@@ -145,6 +161,11 @@ final class LuigisMansionView extends CompanionView {
         super.onDraw(canvas);
         float w = getWidth(), h = getHeight();
         float pad = dp(10f);
+
+        // Touch buttons along the bottom edge, on every screen.
+        float barH = Math.min(dp(52f), h * 0.12f);
+        drawButtons(canvas, new RectF(pad, h - barH - pad * 0.5f, w - pad, h - pad * 0.5f));
+        h -= barH + pad * 0.5f;
 
         LuigisMansionCompanion.State s = state;
         if (s == null || (s.mapId == null && lastRoom == null)) {
@@ -172,6 +193,26 @@ final class LuigisMansionView extends CompanionView {
 
         // Keep the marker pulsing (and the manual-browse countdown ticking).
         postInvalidateDelayed(FRAME_MS);
+    }
+
+    private void drawButtons(Canvas canvas, RectF r) {
+        float gap = dp(8f);
+        float bw = (r.width() - gap) / 2;
+        menuButton.set(r.left, r.top, r.left + bw, r.bottom);
+        pauseButton.set(r.left + bw + gap, r.top, r.right, r.bottom);
+        if (pressed != null && SystemClock.uptimeMillis() > pressedUntil) pressed = null;
+        drawButton(canvas, menuButton, "Menu", pressed == menuButton);
+        drawButton(canvas, pauseButton, "Pause", pressed == pauseButton);
+    }
+
+    private void drawButton(Canvas canvas, RectF r, String label, boolean down) {
+        fill.setColor(down ? Color.argb(90, Color.red(green), Color.green(green), Color.blue(green)) : panel);
+        canvas.drawRoundRect(r, dp(10f), dp(10f), fill);
+        labelPaint.setColor(down ? green : textMain);
+        labelPaint.setTextSize(Math.min(dp(16f), r.height() * 0.38f));
+        labelPaint.setTextAlign(Paint.Align.CENTER);
+        canvas.drawText(label, r.centerX(), r.centerY() + labelPaint.getTextSize() * 0.35f, labelPaint);
+        labelPaint.setTextAlign(Paint.Align.LEFT);
     }
 
     private void drawWaiting(Canvas canvas, float w, float h) {

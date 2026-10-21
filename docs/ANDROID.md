@@ -64,6 +64,7 @@ cd platforms/android && ./gradlew :app:assembleRelease
 1. First boot on the Thor, single screen (this branch).
 2. Thor performance preset: 60 fps target, Enhanced lighting / AO / volumetric beam off.
 3. Companion screen: map + status (done, ported from Dolphin Dualscreen).
-4. Next: touch buttons on the companion (F1 menu, GBH, call E. Gadd), option to hide the top-screen
+4. Touch buttons: Menu (F1 on the main screen) and Pause (Start) done. Next: GBH / call E. Gadd once
+   their buttons are confirmed on device, option to hide the top-screen
    HUD while the companion shows it (hooks on `fn_8003E3D0`), Pluto-style theming.
 5. Later: F1 menu (ImGui) rendered on the bottom screen (second Dawn surface).

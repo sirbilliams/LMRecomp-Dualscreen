@@ -18,6 +18,7 @@
 
 #include "port/settings.h"
 
+#include <atomic>
 #include <aurora/binding.hpp>
 #include <aurora/input.hpp>
 #include <aurora/pad.hpp>
@@ -1361,7 +1362,21 @@ void beforeRead() {
     }
 }
 
+namespace {
+std::atomic<u32> sInjectMask{0};
+std::atomic<int> sInjectReads{0};
+}  // namespace
+
+void pressButtons(u16 mask, int reads) {
+    sInjectMask = mask;
+    sInjectReads = reads;
+}
+
 void afterRead(PADStatus* status) {
+    if (sInjectReads.load() > 0) {
+        if (status[0].err == PAD_ERR_NONE) status[0].button |= u16(sInjectMask.load());
+        sInjectReads.fetch_sub(1);
+    }
     std::lock_guard lk(sMutex);
     for (int port = 0; port < PAD_MAX_CONTROLLERS; port++) {
         auto& st = sPorts[port];

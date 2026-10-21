@@ -15,4 +15,12 @@ public final class CompanionNative {
 
     /** Returns [serial, value0, valid0, value1, valid1, ...]; serial is 0 while no game runs. */
     public static native int[] getSnapshot();
+
+    /** Holds GameCube buttons (PAD_BUTTON_* mask) for the next `frames` controller reads. */
+    public static native void pressButtons(int mask, int frames);
+
+    /** Opens or closes the F1 options menu on the main screen. */
+    public static native void toggleMenu();
+
+    public static final int PAD_BUTTON_START = 0x1000;
 }

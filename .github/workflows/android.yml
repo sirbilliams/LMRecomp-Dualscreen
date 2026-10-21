@@ -50,8 +50,9 @@ jobs:
         with:
           packages: platform-tools
 
+      # compileSdk 37 is fetched by the Android Gradle plugin itself (as in Dusk's CI).
       - name: Install Android SDK packages
-        run: sdkmanager "platforms;android-37" "build-tools;36.1.0" "ndk;${ANDROID_NDK_VERSION}"
+        run: sdkmanager "platforms;android-36" "build-tools;36.1.0" "ndk;${ANDROID_NDK_VERSION}"
 
       - name: Install Rust Android target
         run: |
