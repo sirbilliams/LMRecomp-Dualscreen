@@ -30,6 +30,23 @@ updates merge cleanly.
 - **Relaunch** (F1 > switch version / re-run setup): starts the launch intent (with
   `borealis_argv = --setup` when needed) and exits; Android starts it in a new process.
 
+## Companion screen (AYN Thor bottom screen)
+
+Ported from the Dolphin Dualscreen companion (`sirbilliams/Dolphin-Dualscreen`), same look and
+behaviour: mansion map following Luigi's room, health, Boos, treasure, keys.
+
+- Java: `platforms/android/.../companion/`. `CompanionScreenController` polls every 100 ms while
+  `LMActivity` is resumed, opens a `CompanionPresentation` (non-focusable, so the controller and
+  the game keep focus) on the first display that is not the game's, and feeds the view.
+- Native: `src/port/android_companion.cpp` (`CompanionNative.gameId/setWatches/getSnapshot`). The
+  game runs natively, so watches read guest memory directly; the serial is the guest frame number.
+- Addresses are the USA release's (GLME01, from the Luigi's Mansion Archipelago client, MIT); the
+  PAL base gets no companion yet.
+- Floor images (optional): `data/companion/LuigisMansion/` in the app's data folder (floor_1.png,
+  f2.png, f3.png, b1.png, roof.png, lab.png from the Luigi's Mansion PopTracker pack). Without them
+  the floors are drawn as labelled room markers. Tap the map to page floors; tap the header to follow Luigi.
+- "Pause when window loses focus" defaults to off on Android.
+
 ## Building
 
 CI (`.github/workflows/android.yml`) builds the APK on every push. Locally (Linux, Android SDK + NDK 29.0.14206865, JDK 17, Rust with the `aarch64-linux-android` target):
@@ -46,5 +63,7 @@ cd platforms/android && ./gradlew :app:assembleRelease
 
 1. First boot on the Thor, single screen (this branch).
 2. Thor performance preset: 60 fps target, Enhanced lighting / AO / volumetric beam off.
-3. Second screen: second Dawn surface on display 2 (Presentation); F1 menu (ImGui) with touch.
-4. Companion: HUD elements moved down (hooks on `fn_8003E3D0`), GBH map, touch buttons.
+3. Companion screen: map + status (done, ported from Dolphin Dualscreen).
+4. Next: touch buttons on the companion (F1 menu, GBH, call E. Gadd), option to hide the top-screen
+   HUD while the companion shows it (hooks on `fn_8003E3D0`), Pluto-style theming.
+5. Later: F1 menu (ImGui) rendered on the bottom screen (second Dawn surface).

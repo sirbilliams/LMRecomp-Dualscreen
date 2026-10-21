@@ -91,7 +91,12 @@ struct AudioSettings {
 
 struct EnhancementSettings {
     bool showFps = false;
+#ifdef __ANDROID__
+    // AYN Thor: touching the companion screen must not pause the game (backgrounding still does).
+    bool pauseOnFocusLoss = false;
+#else
     bool pauseOnFocusLoss = true;
+#endif
     bool hiddenMansionPal = true;  // default Hidden Mansion rules for saves that have not chosen in E. Gadd's lab
     int palLanguage = 1;           // PAL game only: 1 English, 2 German, 3 French, 4 Spanish, 5 Italian (next launch)
     bool gbhClock = false;         // cut E3 GBH clock/radar screen, toggled in game with D-pad Left

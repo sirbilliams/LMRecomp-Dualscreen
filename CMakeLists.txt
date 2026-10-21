@@ -149,7 +149,7 @@ list(APPEND RECOMP_RUNTIME_SOURCES src/port/crash_handler.cpp src/port/options.c
 if (ANDROID)
     # No in-place updater on Android (the APK is updated by reinstalling); docs/ANDROID.md.
     set(LM_UPDATE_SOURCE src/port/update_android.cpp)
-    list(APPEND RECOMP_RUNTIME_SOURCES src/port/android.cpp)
+    list(APPEND RECOMP_RUNTIME_SOURCES src/port/android.cpp src/port/android_companion.cpp)
 else ()
     set(LM_UPDATE_SOURCE src/port/update.cpp)
 endif ()
