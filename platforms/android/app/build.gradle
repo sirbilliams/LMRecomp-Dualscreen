@@ -15,7 +15,6 @@ ext.borealisAndroid = [
     namespace: 'io.github.sirbilliams.lmrecompiled',
     applicationId: 'io.github.sirbilliams.lmrecompiled',
     abis: ['arm64-v8a'],
-    compileSdk: 36,
     targetSdk: 36,
     assets: [
         // The shipped shader precache list; main.cpp copies it into the data folder.
