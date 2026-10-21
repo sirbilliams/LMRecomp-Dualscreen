@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">LM Recompiled</string>
+    <string name="documents_provider_root_name">LM Recompiled Data</string>
+    <string name="documents_provider_summary">Settings, saves, disc images and logs</string>
+</resources>

@@ -1,0 +1,125 @@
+# Builds the on-device compiler for the Android port (docs/ANDROID.md): clang and ld.lld as
+# arm64 Android executables, AArch64 target only, statically linked against libc++. Setup on the
+# phone uses them to compile the game module from the player's own disc.
+#
+# Slow (1.5-3 h), so it builds only when the release "android-llvm-<version>" does not exist yet
+# (bump LLVM_RELEASE here and in android.yml to rebuild); the APK workflow downloads it from there.
+name: Android compiler (LLVM)
+
+on:
+  workflow_dispatch:
+  workflow_call:
+
+permissions:
+  contents: write
+
+env:
+  LLVM_VERSION: "20.1.8"
+  LLVM_RELEASE: "android-llvm-20.1.8-r1"
+  ANDROID_NDK_VERSION: "29.0.14206865"
+
+jobs:
+  llvm:
+    runs-on: ubuntu-latest
+    # One build at a time: a run queued behind a running build finds the release and skips.
+    concurrency:
+      group: android-llvm
+      cancel-in-progress: false
+    timeout-minutes: 350
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Already built?
+        id: have
+        run: |
+          if gh release view "$LLVM_RELEASE" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "Release $LLVM_RELEASE exists; nothing to build."
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Free disk space
+        if: steps.have.outputs.exists != 'true'
+        run: |
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/.ghcup /usr/local/share/boost /opt/hostedtoolcache/CodeQL
+          df -h /
+
+      - name: Install tools
+        if: steps.have.outputs.exists != 'true'
+        run: sudo apt-get update && sudo apt-get -y install ninja-build ccache
+
+      - name: Setup Android SDK
+        if: steps.have.outputs.exists != 'true'
+        uses: android-actions/setup-android@v4
+        with:
+          packages: platform-tools
+
+      - name: Install NDK
+        if: steps.have.outputs.exists != 'true'
+        run: sdkmanager "ndk;${ANDROID_NDK_VERSION}"
+
+      - name: Get LLVM sources
+        if: steps.have.outputs.exists != 'true'
+        run: git clone --depth 1 -b "llvmorg-${LLVM_VERSION}" https://github.com/llvm/llvm-project.git llvm-project
+
+      - name: Build host table generators
+        if: steps.have.outputs.exists != 'true'
+        run: |
+          cmake -G Ninja -S llvm-project/llvm -B host \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DLLVM_ENABLE_PROJECTS=clang \
+            -DLLVM_TARGETS_TO_BUILD=AArch64 \
+            -DLLVM_INCLUDE_TESTS=OFF -DLLVM_INCLUDE_EXAMPLES=OFF -DLLVM_INCLUDE_BENCHMARKS=OFF
+          ninja -C host llvm-tblgen clang-tblgen
+          ls host/bin
+
+      - name: Configure (arm64 Android)
+        if: steps.have.outputs.exists != 'true'
+        run: |
+          NDK="$ANDROID_HOME/ndk/$ANDROID_NDK_VERSION"
+          cmake -G Ninja -S llvm-project/llvm -B target \
+            -DCMAKE_TOOLCHAIN_FILE="$NDK/build/cmake/android.toolchain.cmake" \
+            -DANDROID_ABI=arm64-v8a \
+            -DANDROID_PLATFORM=android-28 \
+            -DANDROID_STL=c++_static \
+            -DCMAKE_BUILD_TYPE=MinSizeRel \
+            -DLLVM_ENABLE_PROJECTS="clang;lld" \
+            -DLLVM_TARGETS_TO_BUILD=AArch64 \
+            -DLLVM_HOST_TRIPLE=aarch64-linux-android28 \
+            -DLLVM_DEFAULT_TARGET_TRIPLE=aarch64-linux-android28 \
+            -DLLVM_NATIVE_TOOL_DIR="$PWD/host/bin" \
+            -DLLVM_TABLEGEN="$PWD/host/bin/llvm-tblgen" \
+            -DCLANG_TABLEGEN="$PWD/host/bin/clang-tblgen" \
+            -DLLVM_ENABLE_ZLIB=OFF -DLLVM_ENABLE_ZSTD=OFF -DLLVM_ENABLE_LIBXML2=OFF \
+            -DLLVM_ENABLE_LIBEDIT=OFF -DLLVM_ENABLE_LIBPFM=OFF \
+            -DLLVM_INCLUDE_TESTS=OFF -DLLVM_INCLUDE_EXAMPLES=OFF -DLLVM_INCLUDE_BENCHMARKS=OFF \
+            -DLLVM_INCLUDE_DOCS=OFF -DLLVM_INCLUDE_UTILS=OFF \
+            -DCLANG_ENABLE_ARCMT=OFF -DCLANG_ENABLE_STATIC_ANALYZER=OFF \
+            -DCLANG_PLUGIN_SUPPORT=OFF -DLLVM_ENABLE_PLUGINS=OFF
+
+      - name: Build clang and lld
+        if: steps.have.outputs.exists != 'true'
+        run: ninja -C target clang lld
+
+      - name: Package
+        if: steps.have.outputs.exists != 'true'
+        run: |
+          NDK="$ANDROID_HOME/ndk/$ANDROID_NDK_VERSION"
+          STRIP="$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-strip"
+          mkdir -p out/jniLibs/arm64-v8a
+          cp "$(readlink -f target/bin/clang)" out/jniLibs/arm64-v8a/libclang_exe.so
+          cp "$(readlink -f target/bin/lld)" out/jniLibs/arm64-v8a/liblld_exe.so
+          "$STRIP" out/jniLibs/arm64-v8a/*.so
+          cp llvm-project/llvm/LICENSE.TXT out/LLVM-LICENSE.TXT
+          file out/jniLibs/arm64-v8a/*.so
+          ls -la out/jniLibs/arm64-v8a
+          tar -C out -czf android-llvm-arm64.tar.gz .
+
+      - name: Publish
+        if: steps.have.outputs.exists != 'true'
+        run: |
+          gh release create "$LLVM_RELEASE" android-llvm-arm64.tar.gz -R "$GITHUB_REPOSITORY" \
+            --title "On-device compiler (LLVM $LLVM_VERSION, arm64 Android)" \
+            --notes "clang + ld.lld $LLVM_VERSION for aarch64 Android (AArch64 target only). Used by the APK build; not a game release." \
+            --prerelease

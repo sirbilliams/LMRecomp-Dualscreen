@@ -1,0 +1,85 @@
+# Builds the Android APK (docs/ANDROID.md). The APK contains the runtime only, never game data:
+# the game module is compiled on the phone from the player's own disc.
+name: Android APK
+
+on:
+  push:
+    branches: [main, android, "android-*"]
+    paths-ignore:
+      - "**.md"
+      - .github/workflows/android-llvm.yml
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  ANDROID_NDK_VERSION: "29.0.14206865"
+  LLVM_RELEASE: "android-llvm-20.1.8-r1"
+
+jobs:
+  compiler:
+    # Builds the on-device compiler once (a release); a no-op when it already exists.
+    uses: ./.github/workflows/android-llvm.yml
+
+  apk:
+    # Runs alongside the compiler job: the first ever build has no compiler release yet, and the
+    # APK still builds (setup then reports the missing compiler; re-run once the release exists).
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          submodules: recursive
+
+      - name: Install tools
+        run: sudo apt-get update && sudo apt-get -y install ninja-build
+
+      - name: Setup Java
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v4
+        with:
+          packages: platform-tools
+
+      - name: Install Android SDK packages
+        run: sdkmanager "platforms;android-36" "build-tools;36.1.0" "ndk;${ANDROID_NDK_VERSION}"
+
+      - name: Install Rust Android target
+        run: |
+          rustup toolchain install stable
+          rustup target add aarch64-linux-android
+
+      - name: Configure
+        run: cmake --preset android-arm64
+
+      - name: Build native library
+        run: cmake --build --preset android-arm64
+
+      - name: Fetch the on-device compiler
+        run: |
+          mkdir -p build/android-llvm
+          if gh release download "$LLVM_RELEASE" -R "$GITHUB_REPOSITORY" -p android-llvm-arm64.tar.gz -D build; then
+            tar -C build/android-llvm -xzf build/android-llvm-arm64.tar.gz
+            ls -la build/android-llvm/jniLibs/arm64-v8a
+          else
+            echo "::warning::Release $LLVM_RELEASE not found yet: this APK has no on-device compiler. Re-run after the compiler job finishes."
+          fi
+
+      - name: Build APK
+        working-directory: platforms/android
+        run: ./gradlew :app:assembleRelease --stacktrace
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v7
+        with:
+          name: LMRecomp-Dualscreen-android-arm64
+          path: platforms/android/app/build/outputs/apk/release/*.apk

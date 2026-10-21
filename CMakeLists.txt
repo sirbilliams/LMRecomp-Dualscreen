@@ -50,7 +50,28 @@ if (NOT _stamped STREQUAL _patch_ids)
     endforeach ()
     file(WRITE ${_stamp} "${_patch_ids}")
 endif ()
+if (ANDROID)
+    # Android (AYN Thor; docs/ANDROID.md): SDL3 must be built from source for its Java glue,
+    # nod has no Android package (built with Corrosion for Rust_CARGO_TARGET aarch64-linux-android).
+    set(AURORA_SDL3_PROVIDER vendor CACHE STRING "" FORCE)
+    set(AURORA_NOD_PROVIDER vendor CACHE STRING "" FORCE)
+    set(AURORA_NOD_LINKAGE static CACHE STRING "" FORCE)
+endif ()
 add_subdirectory(extern/aurora EXCLUDE_FROM_ALL)
+
+if (ANDROID)
+    # Borealis (MIT, encounter/borealis): the Android app shell for Aurora ports (activity,
+    # documents provider, Gradle staging). Only its Android packaging is used; the optional
+    # modules that pull in more dependencies stay off.
+    foreach (_opt CLI HTTP WEBSOCKET NET UPDATE CRASH DATA CONFIG DISC UI SENTRY DISCORD IO FILE_SELECT)
+        set(BOREALIS_ENABLE_${_opt} OFF CACHE BOOL "" FORCE)
+    endforeach ()
+    set(BOREALIS_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+    if (NOT BOREALIS_APP_VERSION_OVERRIDE)
+        set(BOREALIS_APP_VERSION_OVERRIDE "${PROJECT_VERSION}-android" CACHE STRING "" FORCE)
+    endif ()
+    add_subdirectory(extern/borealis EXCLUDE_FROM_ALL)
+endif ()
 
 
 # ---- Shared game/library compile environment -------------------------------
@@ -85,11 +106,13 @@ endforeach ()
 # each unit is made to compile against Aurora (see docs/ROADMAP.md, Phase 1).
 file(GLOB PORT_SOURCES CONFIGURE_DEPENDS src/port/*.cpp src/port/os/*.cpp src/helpers/*.cpp)
 file(GLOB_RECURSE GAME_SOURCES CONFIGURE_DEPENDS src/game/*.cpp)
+if (NOT ANDROID)
 add_executable(lmport ${PORT_SOURCES} ${GAME_SOURCES})
 target_include_directories(lmport PRIVATE src)
 target_link_libraries(lmport PRIVATE aurora::main ${GAME_LIBS} ${JSYSTEM_LIBRARIES})
 if (WIN32)
     target_link_libraries(lmport PRIVATE dbghelp winhttp bcrypt)
+endif ()
 endif ()
 
 if (WIN32)
@@ -112,19 +135,29 @@ endif ()
 # dev build uses. Nothing generated is ever committed.
 add_library(lm_recompiler STATIC src/recompiler/recompiler.cpp src/recompiler/recompiler.h)
 target_include_directories(lm_recompiler PUBLIC src)
-add_executable(lmrecompile tools/recomp/lmrecompile.cpp)
-target_link_libraries(lmrecompile PRIVATE lm_recompiler)
+if (NOT ANDROID)
+    add_executable(lmrecompile tools/recomp/lmrecompile.cpp)
+    target_link_libraries(lmrecompile PRIVATE lm_recompiler)
+endif ()
 
 # Runtime shared by both executables: memory/CPU helpers, scheduler, HLE SDK, frame
 # driver, audio, menu. module_rt.cpp belongs to the game module, not the runtime.
 file(GLOB RECOMP_RUNTIME_SOURCES CONFIGURE_DEPENDS src/recomp/*.cpp)
 list(REMOVE_ITEM RECOMP_RUNTIME_SOURCES ${CMAKE_SOURCE_DIR}/src/recomp/module_rt.cpp)
 list(APPEND RECOMP_RUNTIME_SOURCES src/port/crash_handler.cpp src/port/options.cpp src/port/dol.cpp
-    src/port/settings.cpp src/port/install.cpp src/port/update.cpp)
+    src/port/settings.cpp src/port/install.cpp)
+if (ANDROID)
+    # No in-place updater on Android (the APK is updated by reinstalling); docs/ANDROID.md.
+    set(LM_UPDATE_SOURCE src/port/update_android.cpp)
+    list(APPEND RECOMP_RUNTIME_SOURCES src/port/android.cpp)
+else ()
+    set(LM_UPDATE_SOURCE src/port/update.cpp)
+endif ()
+list(APPEND RECOMP_RUNTIME_SOURCES ${LM_UPDATE_SOURCE})
 # The program's version (F1 > Game, the updater's comparison with the latest GitHub release, the
 # game module's cache key; docs/SETUP.md "Updates"). Only this file sees it, so a version bump
 # rebuilds one file.
-set_source_files_properties(src/port/update.cpp PROPERTIES COMPILE_DEFINITIONS "LM_VERSION=\"${PROJECT_VERSION}\"")
+set_source_files_properties(${LM_UPDATE_SOURCE} PROPERTIES COMPILE_DEFINITIONS "LM_VERSION=\"${PROJECT_VERSION}\"")
 
 function(lm_runtime_target tgt)
     target_include_directories(${tgt} PRIVATE src
@@ -144,6 +177,8 @@ function(lm_runtime_target tgt)
             add_custom_command(TARGET ${tgt} POST_BUILD
                 COMMAND ${CMAKE_COMMAND} -E copy_if_different ${_dawn_extra_dlls} $<TARGET_FILE_DIR:${tgt}>)
         endif ()
+    elseif (ANDROID)
+        target_link_libraries(${tgt} PRIVATE android log ${CMAKE_DL_LIBS})
     elseif (CMAKE_SYSTEM_NAME STREQUAL "Linux")
         # Portable Linux binary (docs/LINUX.md): SDL3, Dawn and nod are linked statically by
         # Aurora; the C++ runtime is too, and src/port/glibc_compat.c covers the few symbols
@@ -161,12 +196,36 @@ endfunction()
 # the setup UI; the game itself is a module DLL that setup compiles from the user's disc
 # with the bundled clang + lld (docs/SETUP.md).
 file(GLOB SETUP_SOURCES CONFIGURE_DEPENDS src/setup/*.cpp src/setup/*.h)
-add_executable(LuigisMansionRecomp ${RECOMP_RUNTIME_SOURCES} ${SETUP_SOURCES})
+if (ANDROID)
+    # Android: the program is libmain.so, started by SDL's activity (Borealis shell,
+    # platforms/android; docs/ANDROID.md).
+    add_library(LuigisMansionRecomp SHARED ${RECOMP_RUNTIME_SOURCES} ${SETUP_SOURCES})
+else ()
+    add_executable(LuigisMansionRecomp ${RECOMP_RUNTIME_SOURCES} ${SETUP_SOURCES})
+endif ()
 lm_runtime_target(LuigisMansionRecomp)
 target_link_libraries(LuigisMansionRecomp PRIVATE lm_recompiler)  # nod comes with aurora::dvd
+if (ANDROID)
+    borealis_configure_android_application(LuigisMansionRecomp)
+endif ()
 # Setup's inputs are embedded in the executable (src/setup/embedded.cpp): symbol maps,
 # hooks, and the game module's freestanding sources.
-add_executable(lmembed tools/recomp/lmembed.cpp)
+if (CMAKE_CROSSCOMPILING)
+    # lmembed runs during the build, so it must be a program for the build machine (Android
+    # builds cross-compile): build it with the host compiler at configure time.
+    find_program(LM_HOST_CXX NAMES c++ clang++ g++ REQUIRED NO_CMAKE_FIND_ROOT_PATH)
+    set(LM_HOST_LMEMBED ${CMAKE_BINARY_DIR}/host/lmembed)
+    file(MAKE_DIRECTORY ${CMAKE_BINARY_DIR}/host)
+    execute_process(COMMAND ${LM_HOST_CXX} -std=c++17 -O1 ${CMAKE_SOURCE_DIR}/tools/recomp/lmembed.cpp -o ${LM_HOST_LMEMBED}
+                    RESULT_VARIABLE _lmembed_rc)
+    if (NOT _lmembed_rc EQUAL 0)
+        message(FATAL_ERROR "Could not build lmembed for the build machine with ${LM_HOST_CXX}")
+    endif ()
+    set(LM_LMEMBED ${LM_HOST_LMEMBED})
+else ()
+    add_executable(lmembed tools/recomp/lmembed.cpp)
+    set(LM_LMEMBED lmembed)
+endif ()
 set(LM_EMBEDDED_FILES
     kSymbolsUs=decomp/config/GLME01/symbols.txt kSplitsUs=decomp/config/GLME01/splits.txt
     kSymbolsPal=decomp/config/GLMP01_00/symbols.txt kVersionMapPal=tools/recomp/GLMP01_map.txt
@@ -178,8 +237,8 @@ foreach (_e ${LM_EMBEDDED_FILES})
     list(APPEND _embed_deps ${_f})
 endforeach ()
 add_custom_command(OUTPUT ${CMAKE_BINARY_DIR}/embedded_data.cpp
-    COMMAND lmembed ${CMAKE_BINARY_DIR}/embedded_data.cpp setup::embedded::data ${LM_EMBEDDED_FILES}
-    DEPENDS lmembed ${_embed_deps}
+    COMMAND ${LM_LMEMBED} ${CMAKE_BINARY_DIR}/embedded_data.cpp setup::embedded::data ${LM_EMBEDDED_FILES}
+    DEPENDS ${LM_LMEMBED} ${_embed_deps}
     WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
     COMMENT "Embedding setup data"
     VERBATIM)
@@ -199,6 +258,7 @@ endif ()
 # Packaging: `cmake --install build/<preset> --prefix <dir>` lays out a release folder.
 # LM_LLVM_DIR (an LLVM bin directory) supplies the bundled clang and lld-link / ld.lld.
 set(LM_LLVM_DIR "${_cxx_dir}" CACHE PATH "LLVM bin directory whose clang and lld-link (Windows) / ld.lld (Linux) are bundled on install")
+if (NOT ANDROID)
 install(TARGETS LuigisMansionRecomp RUNTIME DESTINATION .)
 install(FILES NOTICE.md DESTINATION .)
 install(FILES data/pipelines.bin DESTINATION .)
@@ -243,6 +303,7 @@ else ()
     install(PROGRAMS packaging/linux/LuigisMansionRecompiled.sh DESTINATION .)
     install(FILES packaging/linux/README.txt DESTINATION .)
 endif ()
+endif ()  # NOT ANDROID
 
 # lmrecomp: developer build with the game recompiled at build time and linked in
 # statically (debuggable, no setup). LM_DOL is the user's own main.dol; LM_DOL_VERSION
@@ -250,7 +311,7 @@ endif ()
 set(LM_DOL "${CMAKE_SOURCE_DIR}/Luigis Mansion US/sys/main.dol" CACHE FILEPATH
     "Path to your Luigi's Mansion main.dol, extracted from your own disc")
 set(LM_DOL_VERSION "GLME01" CACHE STRING "Release of LM_DOL: GLME01 (USA) or GLMP01 (Europe)")
-if (EXISTS ${LM_DOL})
+if (EXISTS ${LM_DOL} AND NOT ANDROID)
     set(LM_RECOMP_DIR ${CMAKE_BINARY_DIR}/recomp_gen)
     if (LM_DOL_VERSION STREQUAL "GLMP01")
         set(_recomp_cfg --symbols ${CMAKE_SOURCE_DIR}/decomp/config/GLMP01_00/symbols.txt

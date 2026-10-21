@@ -14,6 +14,9 @@
 #include <filesystem>
 #include <string>
 
+#ifdef __ANDROID__
+#include "port/install.h"
+#endif
 #ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
@@ -32,6 +35,9 @@ std::filesystem::path exeDir() {
     wchar_t buf[MAX_PATH * 4];
     const DWORD n = GetModuleFileNameW(nullptr, buf, DWORD(std::size(buf)));
     return std::filesystem::path(std::wstring(buf, n)).parent_path();
+#elif defined(__ANDROID__)
+    // main.cpp extracts the shipped pipelines.bin from the APK assets into the data folder.
+    return port::dataDir();
 #else
     return std::filesystem::read_symlink("/proc/self/exe").parent_path();
 #endif

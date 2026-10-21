@@ -1,0 +1,78 @@
+plugins {
+    id 'com.android.application'
+}
+
+// Android shell for Luigi's Mansion Recompiled (docs/ANDROID.md), on Borealis' shared Gradle
+// script: it stages libmain.so (CMake target LuigisMansionRecomp), libc++_shared.so and the
+// SDL / Aurora / Borealis Java sources. Configure and build CMake (preset android-arm64) first.
+def repoDir = rootProject.projectDir.parentFile.parentFile
+def borealisDir = new File(repoDir, 'extern/borealis')
+def nativeBuildDir = new File(repoDir, 'build/android-arm64')
+
+ext.borealisAndroid = [
+    borealisDir: borealisDir,
+    propertiesFile: new File(nativeBuildDir, 'borealis-android.properties'),
+    namespace: 'io.github.sirbilliams.lmrecompiled',
+    applicationId: 'io.github.sirbilliams.lmrecompiled',
+    abis: ['arm64-v8a'],
+    compileSdk: 36,
+    targetSdk: 36,
+    assets: [
+        // The shipped shader precache list; main.cpp copies it into the data folder.
+        [from: new File(repoDir, 'data'), includes: ['pipelines.bin']]
+    ],
+    proguardRules: file('proguard-rules.pro')
+]
+
+apply from: new File(borealisDir, 'platforms/android/gradle/borealis-application.gradle')
+
+// The on-device compiler (clang + ld.lld for arm64 Android, built by
+// .github/workflows/android-llvm.yml) ships as native libraries named lib*.so: the native
+// library folder is the only app folder Android lets a process execute files from.
+// LM_ANDROID_LLVM_DIR points at a folder with arm64-v8a/libclang_exe.so and liblld_exe.so.
+def llvmDir = System.getenv('LM_ANDROID_LLVM_DIR') ?: new File(repoDir, 'build/android-llvm/jniLibs').path
+
+android {
+    sourceSets {
+        main {
+            jniLibs.srcDirs += [llvmDir]
+        }
+    }
+    packaging {
+        jniLibs {
+            // Extract the libraries to disk at install time, so the compiler can be executed.
+            useLegacyPackaging = true
+        }
+    }
+    signingConfigs {
+        // Release builds are signed with the debug key unless CI provides a real one, so the
+        // APK from the workflow installs as is.
+        ci {
+            def ks = System.getenv('LM_KEYSTORE')
+            if (ks) {
+                storeFile file(ks)
+                storePassword System.getenv('LM_KEYSTORE_PASSWORD')
+                keyAlias System.getenv('LM_KEY_ALIAS')
+                keyPassword System.getenv('LM_KEY_PASSWORD')
+            }
+        }
+    }
+    buildTypes {
+        release {
+            signingConfig System.getenv('LM_KEYSTORE') ? signingConfigs.ci : signingConfigs.debug
+        }
+    }
+}
+
+tasks.named('preBuild').configure {
+    doFirst {
+        def clang = new File(llvmDir, 'arm64-v8a/libclang_exe.so')
+        if (!clang.isFile()) {
+            logger.warn("No bundled compiler at ${clang}: the APK will build, but setup cannot compile the game.")
+        }
+    }
+}
+
+dependencies {
+    implementation fileTree(dir: 'libs', include: ['*.jar'])
+}

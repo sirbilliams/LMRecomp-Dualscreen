@@ -29,6 +29,9 @@
 #ifndef LM_STATIC_MODULE
 #include "setup/setup.h"
 #endif
+#ifdef __ANDROID__
+#include "port/android.h"
+#endif
 
 #include <cstdio>
 #include <cstdlib>
@@ -150,6 +153,12 @@ std::string argValue(int argc, char** argv, const char* name) {
 
 int main(int argc, char* argv[]) {
     using namespace recomp;
+#ifdef __ANDROID__
+    // No console on Android: the log goes to log.txt in the data folder (Files app > the game),
+    // and the shipped shader list comes out of the APK (docs/ANDROID.md).
+    port::android::redirectLogs(port::dataDir());
+    port::android::extractAsset("pipelines.bin", port::dataDir() / "pipelines.bin");
+#endif
     port::installCrashHandler();
     port::startHangWatchdog();
     port::parseOptions(argc, argv);

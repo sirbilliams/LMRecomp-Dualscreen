@@ -4,6 +4,7 @@
 #include "port/crash_handler.h"
 
 #include <csignal>
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -21,9 +22,53 @@
 #include <tlhelp32.h>
 #else
 #include <dlfcn.h>
+#ifdef __ANDROID__
+#include <unwind.h>
+#else
 #include <execinfo.h>
+#endif
 #include <ucontext.h>
 #include <unistd.h>
+#endif
+
+#ifdef __ANDROID__
+// Bionic only has backtrace() from API 33; the app targets 28. Same output shape as glibc's
+// backtrace_symbols_fd ("binary(symbol+off) [addr]"), written without allocating.
+namespace {
+struct UnwindState {
+    void** frames;
+    int max, count;
+};
+_Unwind_Reason_Code unwindOne(_Unwind_Context* ctx, void* arg) {
+    auto* st = static_cast<UnwindState*>(arg);
+    const uintptr_t pc = _Unwind_GetIP(ctx);
+    if (pc && st->count < st->max) st->frames[st->count++] = reinterpret_cast<void*>(pc);
+    return st->count < st->max ? _URC_NO_REASON : _URC_END_OF_STACK;
+}
+int backtrace(void** frames, int max) {
+    UnwindState st{frames, max, 0};
+    _Unwind_Backtrace(&unwindOne, &st);
+    return st.count;
+}
+void backtrace_symbols_fd(void* const* frames, int count, int fd) {
+    for (int i = 0; i < count; i++) {
+        Dl_info dl{};
+        char line[512];
+        int n;
+        if (dladdr(frames[i], &dl) && dl.dli_fname) {
+            const char* base = static_cast<const char*>(dl.dli_saddr ? dl.dli_saddr : dl.dli_fbase);
+            n = std::snprintf(line, sizeof(line), "%s(%s+0x%lx) [%p] (+0x%lx)\n", dl.dli_fname,
+                              dl.dli_sname ? dl.dli_sname : "",
+                              static_cast<unsigned long>(static_cast<const char*>(frames[i]) - base), frames[i],
+                              static_cast<unsigned long>(static_cast<const char*>(frames[i]) -
+                                                         static_cast<const char*>(dl.dli_fbase)));
+        } else {
+            n = std::snprintf(line, sizeof(line), "? [%p]\n", frames[i]);
+        }
+        if (n > 0) (void)!write(fd, line, size_t(n) < sizeof(line) ? size_t(n) : sizeof(line) - 1);
+    }
+}
+}  // namespace
 #endif
 
 namespace port {
@@ -140,6 +185,12 @@ void onSignal(int sig, siginfo_t* info, void* uctx) {
         const auto* uc = static_cast<const ucontext_t*>(uctx);
         pc = reinterpret_cast<const void*>(uc->uc_mcontext.gregs[REG_RIP]);
         sp = reinterpret_cast<const void*>(uc->uc_mcontext.gregs[REG_RSP]);
+    }
+#elif defined(__aarch64__)
+    if (uctx) {
+        const auto* uc = static_cast<const ucontext_t*>(uctx);
+        pc = reinterpret_cast<const void*>(uc->uc_mcontext.pc);
+        sp = reinterpret_cast<const void*>(uc->uc_mcontext.sp);
     }
 #endif
     Dl_info dl{};

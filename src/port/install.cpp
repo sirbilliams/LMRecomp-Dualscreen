@@ -16,6 +16,9 @@
 #else
 #include <unistd.h>
 #endif
+#ifdef __ANDROID__
+#include "port/android.h"
+#endif
 
 namespace port {
 namespace {
@@ -195,6 +198,14 @@ std::filesystem::path xdgDir(const char* var, const char* fallback) {
 std::filesystem::path configDir() {
 #ifdef _WIN32
     return appDir();
+#elif defined(__ANDROID__)
+    static const std::filesystem::path d = [] {
+        auto p = android::filesDir() / "config";
+        std::error_code ec;
+        std::filesystem::create_directories(p, ec);
+        return p;
+    }();
+    return d;
 #else
     return xdgDir("XDG_CONFIG_HOME", ".config");
 #endif
@@ -203,6 +214,14 @@ std::filesystem::path configDir() {
 std::filesystem::path dataDir() {
 #ifdef _WIN32
     return appDir();
+#elif defined(__ANDROID__)
+    static const std::filesystem::path d = [] {
+        auto p = android::filesDir() / "data";
+        std::error_code ec;
+        std::filesystem::create_directories(p, ec);
+        return p;
+    }();
+    return d;
 #else
     return xdgDir("XDG_DATA_HOME", ".local/share");
 #endif
@@ -211,6 +230,14 @@ std::filesystem::path dataDir() {
 std::filesystem::path cacheDir() {
 #ifdef _WIN32
     return appDir();
+#elif defined(__ANDROID__)
+    static const std::filesystem::path d = [] {
+        auto p = android::filesDir() / "cache";
+        std::error_code ec;
+        std::filesystem::create_directories(p, ec);
+        return p;
+    }();
+    return d;
 #else
     return xdgDir("XDG_CACHE_HOME", ".cache");
 #endif
@@ -267,6 +294,9 @@ void relaunch(bool setup, const std::filesystem::path& exePath) {
     } else if (!exePath.empty()) {
         return;  // the updater reports it
     }
+#elif defined(__ANDROID__)
+    (void)exePath;
+    android::relaunch(setup);
 #else
     std::vector<char*> argv;
     for (auto& a : sArgs) argv.push_back(a.data());

@@ -6,6 +6,9 @@
 #include "setup/disc.h"
 #include "setup/hm_overlay.h"
 #include "setup/module_builder.h"
+#ifdef __ANDROID__
+#include "port/android.h"
+#endif
 
 #include <aurora/aurora.h>
 #include <aurora/event.h>
@@ -14,6 +17,9 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cctype>
+#include <cstdint>
+#include <cstring>
 #include <fstream>
 #include <iterator>
 #include <memory>
@@ -55,6 +61,54 @@ struct Job {
 std::mutex sPickM;
 std::optional<std::string> sPicked[2];
 std::string sDialogError;  // the file dialog could not open (Linux: no xdg-desktop-portal/zenity)
+
+#ifdef __ANDROID__
+// Android: the picker returns a content:// URI, which nod cannot open, so the image is copied
+// into the app's data folder first (docs/ANDROID.md). One copy at a time.
+struct DiscImport {
+    std::atomic<bool> active{false};
+    std::atomic<std::uint64_t> got{0}, total{0};
+    std::atomic<bool> cancel{false};
+    int slot = 0;
+};
+DiscImport sImport;
+
+// "content://.../primary%3AGames%2FLuigi.rvz" -> ".rvz" (nod sniffs the format; the extension
+// only keeps the copy recognisable in the Files app).
+std::string uriExtension(const std::string& uri) {
+    const size_t dot = uri.find_last_of('.');
+    if (dot == std::string::npos) return ".iso";
+    std::string ext = uri.substr(dot);
+    if (ext.size() > 6 || ext.find_first_of("/%") != std::string::npos) return ".iso";
+    std::transform(ext.begin(), ext.end(), ext.begin(), [](unsigned char c) { return char(std::tolower(c)); });
+    return ext;
+}
+
+void startImport(int slot, std::string uri) {
+    if (sImport.active.exchange(true)) return;
+    sImport.slot = slot;
+    sImport.got = 0;
+    sImport.total = 0;
+    sImport.cancel = false;
+    std::thread([slot, uri = std::move(uri)] {
+        const std::string name = std::string(slot == 0 ? "GLME01" : "GLMP01") + uriExtension(uri);
+        std::string err;
+        const auto dest = port::android::importDisc(
+            uri, name,
+            [](std::uint64_t got, std::uint64_t total) {
+                sImport.got = got;
+                sImport.total = total;
+            },
+            &sImport.cancel, err);
+        {
+            std::lock_guard lk(sPickM);
+            if (dest.empty()) sDialogError = "Copying the disc image failed: " + err;
+            else sPicked[slot] = dest.string();
+        }
+        sImport.active = false;
+    }).detach();
+}
+#endif
 
 std::string readText(const std::filesystem::path& p) {
     std::ifstream in(p, std::ios::binary);
@@ -168,6 +222,13 @@ void SDLCALL onPicked(void* userdata, const char* const* files, int) {
         return;
     }
     if (!files[0]) return;  // cancelled
+#ifdef __ANDROID__
+    if (std::strncmp(files[0], "content://", 10) == 0) {
+        sDialogError.clear();
+        startImport(slot, files[0]);
+        return;
+    }
+#endif
     sPicked[slot] = files[0];
 }
 
@@ -281,7 +342,24 @@ bool run(const Options& opts, LaunchInfo& launch) {
                 ImGui::SameLine();
                 if (*notes[i]) ImGui::TextDisabled("%s", notes[i]);
                 ImGui::TextWrapped("%s", slots[i].path.empty() ? "(none)" : slots[i].path.c_str());
+#ifdef __ANDROID__
+                ImGui::BeginDisabled(sImport.active.load());
+#endif
                 if (ImGui::Button("Browse...")) browse(i, slots[i].path);
+#ifdef __ANDROID__
+                ImGui::EndDisabled();
+                if (sImport.active.load() && sImport.slot == i) {
+                    const double got = double(sImport.got.load()), total = double(sImport.total.load());
+                    ImGui::SameLine();
+                    if (total > 0)
+                        ImGui::Text("Copying the disc image... %.0f%% (%.0f of %.0f MB)", 100.0 * got / total,
+                                    got / 1048576.0, total / 1048576.0);
+                    else
+                        ImGui::Text("Copying the disc image... %.0f MB", got / 1048576.0);
+                    ImGui::SameLine();
+                    if (ImGui::SmallButton("Cancel")) sImport.cancel = true;
+                }
+#endif
 #ifndef _WIN32
                 // Linux: the file dialog needs xdg-desktop-portal (or zenity/kdialog); a typed or
                 // pasted path always works (docs/LINUX.md).

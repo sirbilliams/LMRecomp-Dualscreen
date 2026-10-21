@@ -29,6 +29,9 @@
 #include <unistd.h>
 extern char** environ;
 #endif
+#ifdef __ANDROID__
+#include "port/android.h"
+#endif
 
 namespace setup {
 namespace {
@@ -59,7 +62,16 @@ constexpr const char* kLinkerName = "lld-link";
 // helper (one the compiler calls that module_rt.cpp does not provide) into a link error
 // instead of a dlopen failure.
 const std::vector<std::string> kCompileFlags = {
-    "--target=x86_64-pc-linux-gnu", "-std=c++20", "-O2", "-fPIC", "-fvisibility=hidden", "-ffreestanding",
+#if defined(__ANDROID__)
+    // Android (AYN Thor, docs/ANDROID.md): the module is freestanding, so the target only picks
+    // the instruction set and ELF flavour; no NDK sysroot is involved.
+    "--target=aarch64-linux-android28",
+#elif defined(__aarch64__)
+    "--target=aarch64-unknown-linux-gnu",
+#else
+    "--target=x86_64-pc-linux-gnu",
+#endif
+    "-std=c++20", "-O2", "-fPIC", "-fvisibility=hidden", "-ffreestanding",
     "-nostdinc", "-fno-exceptions", "-fno-rtti", "-fno-threadsafe-statics", "-fno-math-errno",
     "-fno-stack-protector", "-funwind-tables", "-Wno-unused-label", "-Wno-unused-variable"};
 const std::vector<std::string> kLinkFlags = {"-shared", "-nostdlib", "--eh-frame-hdr", "-Bsymbolic",
@@ -126,7 +138,13 @@ int run(const std::filesystem::path& exe, const std::vector<std::string>& args, 
 // the setup screen stays responsive while every core compiles.
 int run(const std::filesystem::path& exe, const std::vector<std::string>& args, const std::filesystem::path& log) {
     std::vector<std::string> argStore;
+#ifdef __ANDROID__
+    // The bundled tools ship as lib*.so (the only files Android extracts with exec permission);
+    // clang and lld pick their mode from argv[0], so give them their real names.
+    argStore.push_back(exe.filename() == "liblld_exe.so" ? "ld.lld" : "clang");
+#else
     argStore.push_back(exe.string());
+#endif
     argStore.insert(argStore.end(), args.begin(), args.end());
     std::vector<char*> argv;
     for (auto& a : argStore) argv.push_back(a.data());
@@ -193,6 +211,17 @@ bool moduleUpToDate(const Disc& disc) {
 }
 
 bool findToolchain(std::filesystem::path& clang, std::filesystem::path& lld, std::string& error) {
+#ifdef __ANDROID__
+    {
+        const auto d = port::android::nativeLibDir();
+        std::error_code ec;
+        if (std::filesystem::exists(d / "libclang_exe.so", ec) && std::filesystem::exists(d / "liblld_exe.so", ec)) {
+            clang = d / "libclang_exe.so";
+            lld = d / "liblld_exe.so";
+            return true;
+        }
+    }
+#endif
     const char* exe = kExeSuffix;
     std::vector<std::filesystem::path> dirs{exeDir() / "llvm" / "bin"};
     if (const char* env = std::getenv("LM_LLVM_DIR")) dirs.emplace_back(env);
@@ -225,6 +254,9 @@ bool findToolchain(std::filesystem::path& clang, std::filesystem::path& lld, std
 #ifdef _WIN32
     error = "The bundled compiler (llvm\\bin\\clang.exe and lld-link.exe next to the game) is missing. "
             "Reinstall the game, or set LM_LLVM_DIR to an LLVM bin directory.";
+#elif defined(__ANDROID__)
+    error = "The bundled compiler (libclang_exe.so and liblld_exe.so in the app's native library folder) is "
+            "missing. Reinstall the app.";
 #else
     error = "The bundled compiler (llvm/bin/clang and llvm/bin/ld.lld next to the game) is missing. "
             "Reinstall the game, or set LM_LLVM_DIR to an LLVM bin directory.";
@@ -288,7 +320,13 @@ bool buildModule(const Disc& disc, const Progress& progress, std::string& error)
         std::error_code e;
         return std::filesystem::file_size(a, e) > std::filesystem::file_size(b, e);
     });
-    const unsigned jobs = std::max(1u, std::min<unsigned>(unsigned(sources.size()), std::thread::hardware_concurrency()));
+    unsigned maxJobs = std::thread::hardware_concurrency();
+#ifdef __ANDROID__
+    // Phones: each clang on a generated chunk can take a gigabyte; keep the low-memory killer away.
+    maxJobs = std::min(maxJobs, 4u);
+#endif
+    if (const char* j = std::getenv("LM_BUILD_JOBS")) maxJobs = unsigned(std::max(1, std::atoi(j)));
+    const unsigned jobs = std::max(1u, std::min<unsigned>(unsigned(sources.size()), maxJobs));
     std::mutex m;
     size_t next = 0, done = 0;
     std::string failure;
